@@ -32,6 +32,7 @@ func main() {
 Usage:
   dj [options] <song>...
   dj [options] -f <file.txt>
+  dj [options] <spotify-playlist-url>
 
 Options:
 `)
@@ -43,12 +44,14 @@ Examples:
   dj -o ~/Music "Tame Impala Let It Happen"
   dj -f playlist.txt
   dj -f songs.txt -o ./downloads
+  dj "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"
 
-File format (one song per line):
-  Daft Punk - Around The World
-  Tame Impala - Let It Happen
-  # This is a comment
-  https://youtube.com/watch?v=xxx
+Supported inputs:
+  - Song names: "Artist - Song Title"
+  - YouTube URLs
+  - Spotify track URLs
+  - Spotify playlist URLs (downloads all tracks)
+  - Text file with songs (one per line)
 
 Environment variables (.env supported):
   SPOTIFY_CLIENT_ID      For Spotify URL support
@@ -57,11 +60,37 @@ Environment variables (.env supported):
 	}
 	flag.Parse()
 
+	// Initialize Spotify client first (needed for playlist expansion)
+	var spotifyClient *spotify.Client
+	if *spotifyID != "" && *spotifySecret != "" {
+		var err error
+		spotifyClient, err = spotify.New(*spotifyID, *spotifySecret)
+		if err != nil {
+			fmt.Printf("Warning: Spotify init failed: %v\n", err)
+		}
+	}
+
+	// Setup context for API calls
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle interrupt signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		fmt.Println("\nCancelling...")
+		cancel()
+	}()
+
 	// Collect songs from args and/or file
 	var songs []string
 
-	// From arguments
-	songs = append(songs, flag.Args()...)
+	// From arguments (expand Spotify playlists)
+	for _, arg := range flag.Args() {
+		expanded := expandInput(ctx, arg, spotifyClient)
+		songs = append(songs, expanded...)
+	}
 
 	// From file
 	if *inputFile != "" {
@@ -70,7 +99,11 @@ Environment variables (.env supported):
 			fmt.Printf("Error reading file: %v\n", err)
 			os.Exit(1)
 		}
-		songs = append(songs, fileSongs...)
+		// Expand any Spotify playlists in the file
+		for _, song := range fileSongs {
+			expanded := expandInput(ctx, song, spotifyClient)
+			songs = append(songs, expanded...)
+		}
 	}
 
 	if len(songs) == 0 {
@@ -98,24 +131,6 @@ Environment variables (.env supported):
 		os.Exit(1)
 	}
 
-	// Initialize Spotify (optional)
-	var spotifyClient *spotify.Client
-	if *spotifyID != "" && *spotifySecret != "" {
-		spotifyClient, _ = spotify.New(*spotifyID, *spotifySecret)
-	}
-
-	// Setup cancellation
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		fmt.Println("\nCancelling...")
-		cancel()
-	}()
-
 	// Print header
 	fmt.Printf("\n📁 %s\n", outDir)
 	fmt.Printf("🎵 %d song(s)\n\n", len(songs))
@@ -133,7 +148,7 @@ Environment variables (.env supported):
 
 		fmt.Printf("[%d/%d] %s\n", i+1, len(songs), truncate(song, 55))
 
-		// Resolve Spotify URL to search query
+		// Resolve Spotify track URL to search query
 		query := song
 		if spotify.IsSpotifyTrackURL(song) && spotifyClient != nil {
 			if info, err := spotifyClient.GetTrack(ctx, spotify.ExtractSpotifyID(song)); err == nil {
@@ -163,6 +178,48 @@ Environment variables (.env supported):
 	if failed > 0 {
 		os.Exit(1)
 	}
+}
+
+// expandInput expands a single input into one or more songs
+// Handles Spotify playlists by fetching all tracks
+func expandInput(ctx context.Context, input string, spotifyClient *spotify.Client) []string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return nil
+	}
+
+	// Check if it's a Spotify playlist URL
+	if spotify.IsSpotifyPlaylistURL(input) {
+		if spotifyClient == nil {
+			fmt.Printf("Warning: Spotify credentials required for playlist: %s\n", truncate(input, 50))
+			return nil
+		}
+
+		playlistID := spotify.ExtractSpotifyID(input)
+		if playlistID == "" {
+			fmt.Printf("Warning: Could not extract playlist ID from: %s\n", truncate(input, 50))
+			return nil
+		}
+
+		fmt.Printf("📋 Fetching Spotify playlist...\n")
+		playlist, err := spotifyClient.GetPlaylist(ctx, playlistID)
+		if err != nil {
+			fmt.Printf("Warning: Failed to fetch playlist: %v\n", err)
+			return nil
+		}
+
+		fmt.Printf("📋 Playlist: %s (%d tracks)\n\n", playlist.Name, len(playlist.Tracks))
+
+		// Convert tracks to search queries
+		var songs []string
+		for _, track := range playlist.Tracks {
+			songs = append(songs, track.SearchQuery)
+		}
+		return songs
+	}
+
+	// Not a playlist, return as-is
+	return []string{input}
 }
 
 // readSongsFromFile reads songs from a text file
