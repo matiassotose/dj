@@ -124,7 +124,9 @@ func (d *Downloader) Download(ctx context.Context, url string, callback Progress
 	// Parse progress from stderr
 	var lastFilePath string
 	var stderrLines []string
+	// Match: 45.2% of 5.23MiB at 1.23MiB/s
 	progressRegex := regexp.MustCompile(`(\d+\.?\d*)%`)
+	speedRegex := regexp.MustCompile(`at\s+(\d+\.?\d*\s*[KMG]?i?B/s)`)
 
 	go func() {
 		scanner := bufio.NewScanner(stderr)
@@ -135,8 +137,13 @@ func (d *Downloader) Download(ctx context.Context, url string, callback Progress
 				if progress, err := strconv.ParseFloat(matches[1], 64); err == nil {
 					// Scale progress: 15-90% for download
 					scaledProgress := 15 + (progress * 0.75)
+					// Extract speed if available
+					status := "Downloading..."
+					if speedMatches := speedRegex.FindStringSubmatch(line); len(speedMatches) > 1 {
+						status = speedMatches[1]
+					}
 					if callback != nil {
-						callback(scaledProgress, "Downloading...")
+						callback(scaledProgress, status)
 					}
 				}
 			}

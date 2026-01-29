@@ -16,6 +16,18 @@ import (
 	"github.com/yourusername/dj-bot/internal/spotify"
 )
 
+// ANSI color codes
+const (
+	colorReset  = "\033[0m"
+	colorRed    = "\033[31m"
+	colorGreen  = "\033[32m"
+	colorYellow = "\033[33m"
+	colorBlue   = "\033[34m"
+	colorCyan   = "\033[36m"
+	colorDim    = "\033[2m"
+	colorBold   = "\033[1m"
+)
+
 func main() {
 	// Load .env file silently
 	godotenv.Load()
@@ -66,7 +78,7 @@ Environment variables (.env supported):
 		var err error
 		spotifyClient, err = spotify.New(*spotifyID, *spotifySecret)
 		if err != nil {
-			fmt.Printf("Warning: Spotify init failed: %v\n", err)
+			fmt.Printf("%sWarning: Spotify init failed: %v%s\n", colorYellow, err, colorReset)
 		}
 	}
 
@@ -132,8 +144,8 @@ Environment variables (.env supported):
 	}
 
 	// Print header
-	fmt.Printf("\n📁 %s\n", outDir)
-	fmt.Printf("🎵 %d song(s)\n\n", len(songs))
+	fmt.Printf("\n%s📁 %s%s\n", colorDim, outDir, colorReset)
+	fmt.Printf("%s🎵 %d song(s)%s\n\n", colorCyan, len(songs), colorReset)
 
 	// Download each song
 	success, failed := 0, 0
@@ -146,37 +158,39 @@ Environment variables (.env supported):
 		default:
 		}
 
-		fmt.Printf("[%d/%d] %s\n", i+1, len(songs), truncate(song, 55))
+		fmt.Printf("%s[%d/%d]%s %s\n", colorBlue, i+1, len(songs), colorReset, truncate(song, 55))
 
 		// Resolve Spotify track URL to search query
 		query := song
 		if spotify.IsSpotifyTrackURL(song) && spotifyClient != nil {
 			if info, err := spotifyClient.GetTrack(ctx, spotify.ExtractSpotifyID(song)); err == nil {
 				query = info.SearchQuery
-				fmt.Printf("  → %s - %s", info.Artist, info.Name)
+				fmt.Printf("  %s→ %s - %s", colorDim, info.Artist, info.Name)
 				if info.BPM > 0 {
 					fmt.Printf(" [%.0f BPM, %s]", info.BPM, info.Key)
 				}
-				fmt.Println()
+				fmt.Printf("%s\n", colorReset)
 			}
 		}
 
 		// Download
 		result, err := download(ctx, dl, query)
 		if err != nil {
-			fmt.Printf("  ✗ %v\n\n", err)
+			fmt.Printf("  %s✗ %v%s\n\n", colorRed, err, colorReset)
 			failed++
 			continue
 		}
 
-		fmt.Printf("  ✓ %s\n\n", filepath.Base(result.FilePath))
+		fmt.Printf("  %s✓ %s%s\n\n", colorGreen, filepath.Base(result.FilePath), colorReset)
 		success++
 	}
 
 	// Summary
-	fmt.Printf("Done: %d downloaded, %d failed\n", success, failed)
 	if failed > 0 {
+		fmt.Printf("%sDone: %s%d downloaded%s, %s%d failed%s\n", colorBold, colorGreen, success, colorReset+colorBold, colorRed, failed, colorReset)
 		os.Exit(1)
+	} else {
+		fmt.Printf("%sDone: %s%d downloaded%s\n", colorBold, colorGreen, success, colorReset)
 	}
 }
 
@@ -191,24 +205,24 @@ func expandInput(ctx context.Context, input string, spotifyClient *spotify.Clien
 	// Check if it's a Spotify playlist URL
 	if spotify.IsSpotifyPlaylistURL(input) {
 		if spotifyClient == nil {
-			fmt.Printf("Warning: Spotify credentials required for playlist: %s\n", truncate(input, 50))
+			fmt.Printf("%sWarning: Spotify credentials required for playlist: %s%s\n", colorYellow, truncate(input, 50), colorReset)
 			return nil
 		}
 
 		playlistID := spotify.ExtractSpotifyID(input)
 		if playlistID == "" {
-			fmt.Printf("Warning: Could not extract playlist ID from: %s\n", truncate(input, 50))
+			fmt.Printf("%sWarning: Could not extract playlist ID from: %s%s\n", colorYellow, truncate(input, 50), colorReset)
 			return nil
 		}
 
-		fmt.Printf("📋 Fetching Spotify playlist...\n")
+		fmt.Printf("%s📋 Fetching Spotify playlist...%s\n", colorDim, colorReset)
 		playlist, err := spotifyClient.GetPlaylist(ctx, playlistID)
 		if err != nil {
-			fmt.Printf("Warning: Failed to fetch playlist: %v\n", err)
+			fmt.Printf("%sWarning: Failed to fetch playlist: %v%s\n", colorYellow, err, colorReset)
 			return nil
 		}
 
-		fmt.Printf("📋 Playlist: %s (%d tracks)\n\n", playlist.Name, len(playlist.Tracks))
+		fmt.Printf("%s📋 Playlist: %s%s%s (%d tracks)\n\n", colorCyan, colorBold, playlist.Name, colorReset, len(playlist.Tracks))
 
 		// Convert tracks to search queries
 		var songs []string
@@ -243,13 +257,42 @@ func readSongsFromFile(path string) ([]string, error) {
 	return songs, scanner.Err()
 }
 
-// download downloads a song with progress
+// download downloads a song with progress bar
 func download(ctx context.Context, dl *downloader.Downloader, query string) (*downloader.DownloadResult, error) {
 	var lastPct float64
+	barWidth := 30
+
 	progress := func(pct float64, status string) {
-		if pct-lastPct >= 20 || pct >= 100 {
-			fmt.Printf("  → %.0f%%\n", pct)
-			lastPct = pct
+		if pct < lastPct {
+			return // Don't go backwards
+		}
+		lastPct = pct
+
+		// Calculate filled portion
+		filled := int(pct / 100 * float64(barWidth))
+		if filled > barWidth {
+			filled = barWidth
+		}
+
+		// Build colored progress bar
+		bar := colorGreen + strings.Repeat("█", filled) + colorDim + strings.Repeat("░", barWidth-filled) + colorReset
+
+		// Format status/speed display
+		statusDisplay := ""
+		if strings.Contains(status, "/s") {
+			// It's a speed indicator
+			statusDisplay = fmt.Sprintf(" %s%s%s", colorCyan, status, colorReset)
+		} else if status != "" {
+			// It's a status message - show dimmed
+			statusDisplay = fmt.Sprintf(" %s%s%s", colorDim, truncate(status, 40), colorReset)
+		}
+
+		// Print with carriage return to overwrite (add padding to clear old content)
+		fmt.Printf("\r  [%s] %s%3.0f%%%s%-45s", bar, colorYellow, pct, colorReset, statusDisplay)
+
+		// New line when complete
+		if pct >= 100 {
+			fmt.Println()
 		}
 	}
 
